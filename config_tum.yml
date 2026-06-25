@@ -52,6 +52,10 @@ config:
   # Activate if only certain "Bezirk" should be generated
   bavaria.political_prefix: ["091", "092", "097"] # Oberbayern, Niederbayern, Schwaben
 
+  # 2040 scenario settings (uncomment to activate)
+  # bavaria.scenario_year: 2040
+  # gtfs_path: gtfs_2040
+
 # Overrides for the bavaria pipeline compared to the Île-de-France pipeline
 aliases:
   data.census.filtered: bavaria.ipf.attributed

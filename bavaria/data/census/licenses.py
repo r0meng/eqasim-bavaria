@@ -12,6 +12,7 @@ def configure(context):
 
     context.stage("bavaria.data.spatial.codes")
     context.stage("bavaria.data.census.population")
+    context.stage("bavaria.data.census.population_2024")
 
 COUNT_COLUMN = "Fahrerlaubnisse bzw. Führerscheine"
 # COUNT_COLUMN = "Zusammen"
@@ -145,6 +146,30 @@ def execute(context):
 
     # Check that we have fixed all Kreis
     assert len(missing_kreis) == 0
+
+    # Scale absolute KBA 2024 license counts to the current scenario population.
+    # This ensures that in projection scenarios (e.g. 2040), the number of license
+    # holders per Kreis grows proportionally with the projected population rather
+    # than being pinned to the 2024 KBA absolute counts.
+    df_population_2024 = context.stage("bavaria.data.census.population_2024")
+
+    pop_2024_per_kreis = (
+        df_population_2024
+        .assign(departement_id=lambda d: d["commune_id"].str[:5])
+        .groupby("departement_id")["weight"].sum()
+        .reset_index(name="pop_2024")
+    )
+    pop_current_per_kreis = (
+        df_population
+        .assign(departement_id=lambda d: d["commune_id"].str[:5])
+        .groupby("departement_id")["weight"].sum()
+        .reset_index(name="pop_current")
+    )
+
+    df_kreis = df_kreis.merge(pop_2024_per_kreis, on="departement_id", how="left")
+    df_kreis = df_kreis.merge(pop_current_per_kreis, on="departement_id", how="left")
+    df_kreis["weight"] = df_kreis["weight"] * (df_kreis["pop_current"] / df_kreis["pop_2024"])
+    df_kreis = df_kreis[["departement_id", "weight"]]
 
     return df_country, df_land, df_kreis
 

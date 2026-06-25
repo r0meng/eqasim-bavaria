@@ -2,26 +2,27 @@ import pandas as pd
 import numpy as np
 import os
 
-root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))  # one level up -> pipeline-bavaria
-generate_pop_for_2024 = False # set to True to use the 2024 population data, set to False to use the 2040 population data.
-df_census_2043 = pd.read_csv(os.path.join(root, "census_data_2043.csv"), dtype={"commune_id": "string"})
-
 """
 This stage loads the raw census data for Bavaria.
 
-TODO: This could be replaced with a Germany-wide extract from GENESIS
+Supports two scenarios via the `bavaria.scenario_year` config:
+  - 2024 (default): loads from the official census XLA file
+  - other (e.g. 2040): delegates to bavaria.data.census.projection_2043
 """
 
 def configure(context):
     context.stage("bavaria.data.spatial.codes")
-
     context.config("data_path")
     context.config("bavaria.population_path", "bavaria/a1310c_202400.xla")
+    context.config("bavaria.scenario_year", 2024)
+
+    if context.config("bavaria.scenario_year") != 2024:
+        context.stage("bavaria.data.census.projection_2043")
 
 def construct_municipality_id(municipality_code, association_code):
     if len(municipality_code) == 3:
         # a city without a Kreis, pad with zeros
-        return "09" + municipality_code + "0000000" 
+        return "09" + municipality_code + "0000000"
     elif len(municipality_code) == 6:
         # a regular Gemeinde with a Kreis
 
@@ -34,7 +35,7 @@ def construct_municipality_id(municipality_code, association_code):
                 municipality_code[3:], # Repeat last three digits (Gemeinde)
                 municipality_code[3:], # Repeat last three digits (Gemeinde)
             ])
-        
+
         else:
             # the Gemeinde is in an association (Verbund)
             return "".join([
@@ -47,25 +48,26 @@ def construct_municipality_id(municipality_code, association_code):
 
     raise RuntimeError("Invalid format")
 
-def execute(context):
+def _load_census_2024(context):
+    """Load 2024 census data from the official XLA source file."""
     df_census = pd.read_excel("{}/{}".format(
         context.config("data_path"), context.config("bavaria.population_path")
     ), sheet_name = "Gemeinden", skiprows = 5, names = [
-        "municipality_code", "association_code", "name", "sex", "total", 
-        "age_0", "age_3", "age_6","age_10", "age_15", "age_18", "age_20", "age_25", "age_30", "age_40", "age_50", "age_65", "age_75", 
+        "municipality_code", "association_code", "name", "sex", "total",
+        "age_0", "age_3", "age_6","age_10", "age_15", "age_18", "age_20", "age_25", "age_30", "age_40", "age_50", "age_65", "age_75",
         "municipality_code_copy", "association_code_copy"
     ])
 
     # Only keep rows where we have a value
     df_census = df_census[~df_census["total"].isna()].copy()
-    
+
     # Padding of identifiers, only one following line
     df_census["municipality_code"] = df_census["municipality_code"].ffill(limit = 1)
     df_census["association_code"] = df_census["association_code"].ffill(limit = 1)
-    
+
     # Only keep rows where we have 6 digits (Bezirk + Kreis + Gemeinde) or 3 digits (city without Kreis)
     df_census = df_census[
-        (df_census["municipality_code"].str.len() == 6) | 
+        (df_census["municipality_code"].str.len() == 6) |
         (df_census["municipality_code"].str.len() == 3)
     ].copy()
 
@@ -74,12 +76,11 @@ def execute(context):
     df_census["commune_id"] = [
         construct_municipality_id(*codes) for codes in zip(
             df_census["municipality_code"], df_census["association_code"]
-        ) 
+        )
     ]
 
     df_census["commune_id"] = df_census["commune_id"].astype("category")
-    df_census_2043["commune_id"] = df_census_2043["commune_id"].astype("category") 
-    
+
     # Clean up age structure
     df_census = pd.melt(df_census, ["commune_id", "sex"], [
         "age_0", "age_3", "age_6","age_10", "age_15", "age_18", "age_20", "age_25", "age_30", "age_40", "age_50", "age_65", "age_75"
@@ -100,7 +101,7 @@ def execute(context):
         df_census[df_census["sex"] == "female"].rename(columns = { "population": "female_population" }).drop(columns = ["sex"]),
         on = ["commune_id", "age_class"]
     )
-    
+
     df_census["male_population"] = df_census["total_population"] - df_census["female_population"]
 
     df_male = df_census[["commune_id", "age_class", "male_population"]].rename(columns = {
@@ -119,12 +120,14 @@ def execute(context):
     # Filter for requested codes
     df_codes = context.stage("bavaria.data.spatial.codes")
     df_census = df_census[df_census["commune_id"].isin(df_codes["commune_id"])]
-    
-    if generate_pop_for_2024:
-        return df_census[["commune_id", "sex", "age_class", "weight"]]
+
+    return df_census[["commune_id", "sex", "age_class", "weight"]]
+
+def execute(context):
+    if context.config("bavaria.scenario_year") == 2024:
+        return _load_census_2024(context)
     else:
-        df_census_2043["commune_id"] = df_census_2043["commune_id"].astype("category")
-        return df_census_2043[["commune_id", "sex", "age_class", "weight"]]
+        return context.stage("bavaria.data.census.projection_2043")
 
 def validate(context):
     if not os.path.exists("{}/{}".format(context.config("data_path"), context.config("bavaria.population_path"))):
